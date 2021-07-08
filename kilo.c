@@ -6,14 +6,20 @@
 #include <unistd.h>
 #include <termios.h>
 #include <stdlib.h>
+#include <sys/ioctl.h>
 
 /*** defines ***/
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 /*** data ***/
+struct editorConfig {
+    int screenrows;
+    int screencols;
+    struct termios orig_termios;
+};
 
-struct termios orig_termios;
+struct editorConfig E;
 
 /*** terminal ***/
 
@@ -25,16 +31,16 @@ void die(const char *s) {
 }
 
 void disableRawMode() {
-    if(tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1)
+    if(tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1)
         die("tcsetattr");
 }
 
 void enableRawMode() {
-    if(tcgetattr(STDIN_FILENO, &orig_termios) == -1)
+    if(tcgetattr(STDIN_FILENO, &E.orig_termios) == -1)
         die("tcsetattr");
     atexit(disableRawMode);
     
-    struct termios raw = orig_termios;
+    struct termios raw = E.orig_termios;
 
     tcgetattr(STDIN_FILENO, &raw);
     raw.c_lflag &= ~(IXON | BRKINT | INPCK | ISTRIP | ICRNL);
@@ -55,12 +61,50 @@ char editorReadKey() {
         }
     return c;
 }
+
+int getCursorPosition(int *rows, int *cols) {
+    char buf[32];
+    unsigned int i = 0;
+
+    if(write(STDOUT_FILENO, "\x1b[6n", 4) != 4)
+        return -1;
+
+    while(i < sizeof(buf) - 1) {
+        if(read(STDIN_FILENO, &buf[i], 1) != 1)
+            break;
+        if(buf[i] == 'R')
+            break;
+        i++;
+    }
+    buf[i] = '\0';
+    
+    if(buf[0] != '\x1b' || buf[1] != '[')
+        return -1;
+    if(sscanf(&buf[2], "%d;%d", rows, cols) != 2)
+        return -1;
+
+    return 0;
+}
+
+int getWindowSize(int *rows, int * cols) {
+    struct winsize ws;
+    
+    if(1 || ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+        if(write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12)
+            return -1;
+        return getCursorPosition(rows, cols);
+        } else { 
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+        return 0;
+        }
+    }
 /*** output ***/
 
 void editorDrawRows() {
     int y;
-    for(y = 0; y < 24; y++) {
-        write(STDOUT_FILENO, "\r\n", 3);
+    for(y = 0; y < E.screenrows; y++) {
+        write(STDOUT_FILENO, "~\r\n", 3);
         }
     }
 
@@ -88,10 +132,15 @@ void editorProcessKeypress() {
         }
 }
 
+void initEditor() {
+    if(getWindowSize(&E.screenrows, &E.screencols) == -1)
+        die("getWindowSize");
+}
 /*** init ***/
 
 int main() {
     enableRawMode();
+    initEditor();
 
     while(1) {
         editorRefreshScreen();
